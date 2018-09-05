@@ -28,6 +28,109 @@ class SocrataHarvester(HarvesterBase):
     '''
     implements(IHarvester)
 
+    def _delete_dataset(self, id):
+        base_context = {
+            'model': model,
+            'session': model.Session,
+            'user': self._get_user_name(),
+            'ignore_auth': True
+        }
+        # Delete package
+        toolkit.get_action('package_delete')(base_context, {'id': id})
+        log.info('Deleted package with id {0}'.format(id))
+
+    def _get_existing_dataset(self, guid):
+        '''
+        Check if a dataset with an `identifier` extra already exists.
+
+        Return a dict in `package_show` format.
+        '''
+        datasets = model.Session.query(model.Package.id) \
+            .join(model.PackageExtra) \
+            .filter(model.PackageExtra.key == 'identifier') \
+            .filter(model.PackageExtra.value == guid) \
+            .filter(model.Package.state == 'active') \
+            .all()
+
+        if not datasets:
+            return None
+        elif len(datasets) > 1:
+            log.error('Found more than one dataset with the same guid: {0}'
+                      .format(guid))
+
+        return toolkit.get_action('package_show')({}, {'id': datasets[0][0]})
+
+    def _get_object_extra(self, harvest_object, key):
+        '''
+        Helper function for retrieving the value from a harvest object extra,
+        given the key
+        '''
+        for extra in harvest_object.extras:
+            if extra.key == key:
+                return extra.value
+        return None
+
+    def _build_package_dict(self, context, harvest_object):
+        '''
+        Build and return a package_dict suitable for use with CKAN
+        `package_create` and `package_update`.
+        '''
+
+        # Local harvest source organization
+        source_dataset = toolkit.get_action('package_show')(
+            context.copy(),
+            {'id': harvest_object.source.id}
+        )
+        local_org = source_dataset.get('owner_org')
+
+        res = json.loads(harvest_object.content)
+
+        package_dict = {
+            'title': res['resource']['name'],
+            'name': munge_title_to_name(res['resource']['name']),
+            'url': res.get('permalink', ''),
+            'notes': res['resource'].get('description', ''),
+            'author': res['resource']['attribution'],
+            'tags': [],
+            'extras': [],
+            'identifier': res['resource']['id'],
+            'owner_org': local_org,
+            'resources': []
+        }
+
+        # Add tags
+        package_dict['tags'] = \
+            [{'name': munge_tag(t)}
+             for t in res['classification'].get('tags', [])
+             + res['classification'].get('domain_tags', [])]
+
+        # Add domain_metadata to extras
+        package_dict['extras'].extend(res['classification']
+                                      .get('domain_metadata', []))
+
+        # Add harvester details
+        package_dict.update({
+            'harvest_source_id': harvest_object.job.source.id,
+            'harvest_source_url': harvest_object.job.source.url.strip('/'),
+            'harvest_source_title': harvest_object.job.source.title,
+            # 'harvest_job_id': harvest_object.job.id,
+            # 'harvest_object_id': harvest_object.id
+        })
+
+        # Add provenance
+        if res['resource'].get('provenance', False):
+            package_dict['provenance'] = res['resource']['provenance']
+
+        # Resources
+        package_dict['resources'] = [{
+            'url': DOWNLOAD_ENDPOINT_TEMPLATE.format(
+                domain=urlparse(harvest_object.source.url).hostname,
+                resource_id=res['resource']['id']),
+            'format': 'CSV'
+        }]
+
+        return package_dict
+
     def info(self):
         return {
             'name': 'socrata',
@@ -76,7 +179,7 @@ class SocrataHarvester(HarvesterBase):
                 datasets = \
                     _request_datasets_from_socrata(domain, batch_number,
                                                    current_offset)
-                if len(datasets) == 0:
+                if datasets is None or len(datasets) == 0:
                     raise StopIteration
                 current_offset = current_offset + batch_number
                 for dataset in datasets:
@@ -111,29 +214,7 @@ class SocrataHarvester(HarvesterBase):
 
     def import_stage(self, harvest_object):
         '''
-        The import stage will receive a HarvestObject object and will be
-        responsible for:
-            - performing any necessary action with the fetched object (e.g.
-              create, update or delete a CKAN package).
-              Note: if this stage creates or updates a package, a reference
-              to the package should be added to the HarvestObject.
-            - setting the HarvestObject.package (if there is one)
-            - setting the HarvestObject.current for this harvest:
-               - True if successfully created/updated
-               - False if successfully deleted
-            - setting HarvestObject.current to False for previous harvest
-              objects of this harvest source if the action was successful.
-            - creating and storing any suitable HarvestObjectErrors that may
-              occur.
-            - creating the HarvestObject - Package relation (if necessary)
-            - returning True if the action was done, "unchanged" if the object
-              didn't need harvesting after all or False if there were errors.
 
-        NB You can run this stage repeatedly using 'paster harvest import'.
-
-        :param harvest_object: HarvestObject object
-        :returns: True if the action was done, "unchanged" if the object didn't
-                  need harvesting after all or False if there were errors.
         '''
         log.debug('In SocrataHarvester import_stage')
 
@@ -143,6 +224,16 @@ class SocrataHarvester(HarvesterBase):
             'user': self._get_user_name(),
             'ignore_auth': True
         }
+
+        # status = self._get_object_extra(harvest_object, 'status')
+        # if status == 'delete':
+        #     # Delete package
+        #     toolkit.get_action('package_delete')(
+        #         base_context, {'id': harvest_object.package_id})
+        #     log.info('Deleted package {0} with guid {1}'
+        #              .format(harvest_object.package_id, harvest_object.guid))
+        #     return True
+
         if not harvest_object:
             log.error('No harvest object received')
             return False
@@ -153,59 +244,59 @@ class SocrataHarvester(HarvesterBase):
                                     harvest_object, 'Import')
             return False
 
-        # Local harvest source organization
-        source_dataset = toolkit.get_action('package_show')(
-            base_context.copy(),
-            {'id': harvest_object.source.id}
-        )
-        local_org = source_dataset.get('owner_org')
+        # Get the last harvested object (if any)
+        previous_object = model.Session.query(HarvestObject) \
+            .filter(HarvestObject.guid == harvest_object.guid) \
+            .filter(HarvestObject.current is True) \
+            .first()
+
+        # Flag previous object as not current anymore
+        if previous_object:
+            previous_object.current = False
+            previous_object.add()
+
+        # Flag this object as the current one
+        harvest_object.current = True
+        harvest_object.add()
 
         res = json.loads(harvest_object.content)
-        package_dict = {
-            'title': res['resource']['name'],
-            'name': munge_title_to_name(res['resource']['name']),
-            'url': res.get('permalink', ''),
-            'notes': res['resource'].get('description', ''),
-            'author': res['resource']['attribution'],
-            'tags': [],
-            'extras': [{
-                'key': 'socrata_id', 'value': res['resource']['id']
-            }],
-            'owner_org': local_org,
-            'resources': []
-        }
 
-        # Add tags
-        package_dict['tags'] = \
-            [{'name': munge_tag(t)}
-             for t in res['classification'].get('tags', [])
-             + res['classification'].get('domain_tags', [])]
+        # Check if a dataset with the same guid exists
+        existing_dataset = self._get_existing_dataset(harvest_object.guid)
 
-        # Add domain_metadata to extras
-        package_dict['extras'].extend(res['classification']
-                                      .get('domain_metadata', []))
+        # Delete package (dev testing)
+        # if existing_dataset:
+        #     self._delete_dataset(existing_dataset['id'])
+        # return False
 
-        # Resources
-        package_dict['resources'] = [{
-            'url': DOWNLOAD_ENDPOINT_TEMPLATE.format(
-                domain=urlparse(harvest_object.source.url).hostname,
-                resource_id=res['resource']['id']),
-            'format': 'CSV'
-        }]
+        package_dict = self._build_package_dict(base_context, harvest_object)
 
-        # log.debug(package_dict)
+        if existing_dataset:
+            log.debug('Existing dataset {}'.format(res['resource']['id']))
 
-        try:
-            create_response = toolkit.get_action('package_create')(
-                base_context.copy(),
-                package_dict
-            )
-            # self._create_or_update_package(package_dict, harvest_object,
-            #                                package_dict_form='package_show')
-        except Exception as e:
-            self._save_object_error('Error creating package for {}: {}'
-                                    .format(harvest_object.id, e),
-                                    harvest_object, 'Import')
-            raise e
+            try:
+                toolkit.get_action('package_update')(
+                    base_context.copy(),
+                    package_dict
+                )
+            except Exception as e:
+                self._save_object_error('Error updating package for {}: {}'
+                                        .format(harvest_object.id, e),
+                                        harvest_object, 'Import')
+                return False
+
+        else:
+            log.debug('New dataset {}'.format(res['resource']['id']))
+
+            try:
+                toolkit.get_action('package_create')(
+                    base_context.copy(),
+                    package_dict
+                )
+            except Exception as e:
+                self._save_object_error('Error creating package for {}: {}'
+                                        .format(harvest_object.id, e),
+                                        harvest_object, 'Import')
+                return False
 
         return True
