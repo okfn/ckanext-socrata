@@ -1,6 +1,7 @@
 from __future__ import unicode_literals
 
 import json
+import uuid
 from urlparse import urlparse
 
 import requests
@@ -12,7 +13,7 @@ from ckan.plugins.core import implements
 import ckan.plugins.toolkit as toolkit
 from ckanext.harvest.interfaces import IHarvester
 from ckanext.harvest.harvesters.base import HarvesterBase
-from ckanext.harvest.model import HarvestObject
+from ckanext.harvest.model import HarvestObject, HarvestObjectExtra
 
 import logging
 log = logging.getLogger(__name__)
@@ -69,6 +70,49 @@ class SocrataHarvester(HarvesterBase):
             if extra.key == key:
                 return extra.value
         return None
+
+    def _mark_datasets_for_deletion(self, guids_in_source, harvest_job):
+        '''
+        Given a list of guids in the remote source, check which in the DB need
+        to be deleted. Query all guids in the DB for this source and calculate
+        the difference. For each of these create a HarvestObject with the
+        dataset id, marked for deletion.
+
+        Return a list with the ids of the Harvest Objects to delete.
+        '''
+
+        object_ids = []
+
+        # Get all previous current guids and dataset ids for this source
+        query = \
+            model.Session.query(HarvestObject.guid, HarvestObject.package_id) \
+            .filter(HarvestObject.current == True) \
+            .filter(HarvestObject.harvest_source_id == harvest_job.source.id)  # noqa
+
+        guid_to_package_id = {}
+        for guid, package_id in query:
+            guid_to_package_id[guid] = package_id
+
+        guids_in_db = guid_to_package_id.keys()
+
+        # Get objects/datasets to delete (ie in the DB but not in the source)
+        guids_to_delete = set(guids_in_db) - set(guids_in_source)
+
+        # Create a harvest object for each of them, flagged for deletion
+        for guid in guids_to_delete:
+            obj = HarvestObject(guid=guid, job=harvest_job,
+                                package_id=guid_to_package_id[guid],
+                                extras=[HarvestObjectExtra(key='status',
+                                                           value='delete')])
+
+            # Mark the rest of objects for this guid as not current
+            model.Session.query(HarvestObject) \
+                         .filter_by(guid=guid) \
+                         .update({'current': False}, False)
+            obj.save()
+            object_ids.append(obj.id)
+
+        return object_ids
 
     def _build_package_dict(self, context, harvest_object):
         '''
@@ -188,23 +232,36 @@ class SocrataHarvester(HarvesterBase):
         def _make_harvest_objs(datasets):
             '''Create HarvestObject with Socrata dataset content.'''
             obj_ids = []
+            guids = []
             for d in datasets:
                 log.debug('Creating HarvestObject for {} {}'
                           .format(d['resource']['name'],
                                   d['resource']['id']))
                 obj = HarvestObject(guid=d['resource']['id'],
                                     job=harvest_job,
-                                    content=json.dumps(d))
+                                    content=json.dumps(d),
+                                    extras=[HarvestObjectExtra(
+                                                        key='status',
+                                                        value='hi!')])
                 obj.save()
                 obj_ids.append(obj.id)
-            return obj_ids
+                guids.append(d['resource']['id'])
+            return obj_ids, guids
 
         log.debug('In SocrataHarvester gather_stage (%s)',
                   harvest_job.source.url)
 
         domain = urlparse(harvest_job.source.url).hostname
 
-        return _make_harvest_objs(_page_datasets(domain, 100))
+        object_ids, guids = _make_harvest_objs(_page_datasets(domain, 100))
+
+        # Check if some datasets need to be deleted
+        object_ids_to_delete = \
+            self._mark_datasets_for_deletion(guids, harvest_job)
+
+        object_ids.extend(object_ids_to_delete)
+
+        return object_ids
 
     def fetch_stage(self, harvest_object):
         '''
@@ -225,14 +282,14 @@ class SocrataHarvester(HarvesterBase):
             'ignore_auth': True
         }
 
-        # status = self._get_object_extra(harvest_object, 'status')
-        # if status == 'delete':
-        #     # Delete package
-        #     toolkit.get_action('package_delete')(
-        #         base_context, {'id': harvest_object.package_id})
-        #     log.info('Deleted package {0} with guid {1}'
-        #              .format(harvest_object.package_id, harvest_object.guid))
-        #     return True
+        status = self._get_object_extra(harvest_object, 'status')
+        if status == 'delete':
+            # Delete package
+            toolkit.get_action('package_delete')(
+                base_context, {'id': harvest_object.package_id})
+            log.info('Deleted package {0} with guid {1}'
+                     .format(harvest_object.package_id, harvest_object.guid))
+            return True
 
         if not harvest_object:
             log.error('No harvest object received')
@@ -247,8 +304,8 @@ class SocrataHarvester(HarvesterBase):
         # Get the last harvested object (if any)
         previous_object = model.Session.query(HarvestObject) \
             .filter(HarvestObject.guid == harvest_object.guid) \
-            .filter(HarvestObject.current is True) \
-            .first()
+            .filter(HarvestObject.current == True) \
+            .first()  # noqa
 
         # Flag previous object as not current anymore
         if previous_object:
@@ -258,8 +315,6 @@ class SocrataHarvester(HarvesterBase):
         # Flag this object as the current one
         harvest_object.current = True
         harvest_object.add()
-
-        res = json.loads(harvest_object.content)
 
         # Check if a dataset with the same guid exists
         existing_dataset = self._get_existing_dataset(harvest_object.guid)
@@ -272,8 +327,9 @@ class SocrataHarvester(HarvesterBase):
         package_dict = self._build_package_dict(base_context, harvest_object)
 
         if existing_dataset:
-            log.debug('Existing dataset {}'.format(res['resource']['id']))
-
+            package_dict['id'] = existing_dataset['id']
+            harvest_object.package_id = package_dict['id']
+            harvest_object.add()
             try:
                 toolkit.get_action('package_update')(
                     base_context.copy(),
@@ -286,7 +342,18 @@ class SocrataHarvester(HarvesterBase):
                 return False
 
         else:
-            log.debug('New dataset {}'.format(res['resource']['id']))
+            # We need to explicitly provide a package ID
+            package_dict['id'] = unicode(uuid.uuid4())
+
+            harvest_object.package_id = package_dict['id']
+            harvest_object.add()
+
+            # Defer constraints and flush so the dataset can be indexed with
+            # the harvest object id (on the after_show hook from the harvester
+            # plugin)
+            model.Session.execute(
+                'SET CONSTRAINTS harvest_object_package_id_fkey DEFERRED')
+            model.Session.flush()
 
             try:
                 toolkit.get_action('package_create')(
