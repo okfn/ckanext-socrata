@@ -152,15 +152,6 @@ class SocrataHarvester(HarvesterBase):
         package_dict['extras'].extend(res['classification']
                                       .get('domain_metadata', []))
 
-        # Add harvester details
-        package_dict.update({
-            'harvest_source_id': harvest_object.job.source.id,
-            'harvest_source_url': harvest_object.job.source.url.strip('/'),
-            'harvest_source_title': harvest_object.job.source.title,
-            # 'harvest_job_id': harvest_object.job.id,
-            # 'harvest_object_id': harvest_object.id
-        })
-
         # Add provenance
         if res['resource'].get('provenance', False):
             package_dict['provenance'] = res['resource']['provenance']
@@ -174,6 +165,13 @@ class SocrataHarvester(HarvesterBase):
         }]
 
         return package_dict
+
+    def process_package(self, package, harvest_object):
+        '''
+        Subclasses can override this method to perform additional processing on
+        package dicts during import_stage.
+        '''
+        return package
 
     def info(self):
         return {
@@ -325,6 +323,8 @@ class SocrataHarvester(HarvesterBase):
         # return False
 
         package_dict = self._build_package_dict(base_context, harvest_object)
+
+        self.process_package(package_dict, harvest_object)
 
         if existing_dataset:
             package_dict['id'] = existing_dataset['id']
