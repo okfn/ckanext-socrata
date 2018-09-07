@@ -5,6 +5,7 @@ import uuid
 from urlparse import urlparse
 
 import requests
+from dateutil.parser import parse
 from simplejson.scanner import JSONDecodeError
 
 from ckan import model
@@ -69,6 +70,16 @@ class SocrataHarvester(HarvesterBase):
         for extra in harvest_object.extras:
             if extra.key == key:
                 return extra.value
+        return None
+
+    def _get_package_extra(self, pkg_dict, key):
+        '''
+        Helper function to retrieve the value from a package dict extra, given
+        the key.
+        '''
+        for extra in pkg_dict.get('extras', []):
+            if extra.get('key') == key:
+                return extra.get('value')
         return None
 
     def _mark_datasets_for_deletion(self, guids_in_source, harvest_job):
@@ -151,6 +162,12 @@ class SocrataHarvester(HarvesterBase):
         # Add domain_metadata to extras
         package_dict['extras'].extend(res['classification']
                                       .get('domain_metadata', []))
+
+        # Add source updatedAt to extras
+        package_dict['extras'].append({
+            'key': 'source_updated_at',
+            'value': res['resource']['updatedAt']
+        })
 
         # Add provenance
         if res['resource'].get('provenance', False):
@@ -327,6 +344,15 @@ class SocrataHarvester(HarvesterBase):
         self.process_package(package_dict, harvest_object)
 
         if existing_dataset:
+            # Do we need to update?
+            existing_updated_at = self._get_package_extra(existing_dataset,
+                                                          'source_updated_at')
+            source_updated_at = self._get_package_extra(package_dict,
+                                                        'source_updated_at')
+            if existing_updated_at and source_updated_at and \
+               parse(existing_updated_at) == parse(source_updated_at):
+                return 'unchanged'
+
             package_dict['id'] = existing_dataset['id']
             harvest_object.package_id = package_dict['id']
             harvest_object.add()
