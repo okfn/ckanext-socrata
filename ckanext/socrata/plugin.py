@@ -169,6 +169,13 @@ class SocrataHarvester(HarvesterBase):
             'value': res['resource']['updatedAt']
         })
 
+        # Add Socrata metadata.license if available
+        if res['metadata'].get('license', False):
+            package_dict['extras'].append({
+                'key': 'license',
+                'value': res['metadata']['license']
+            })
+
         # Add provenance
         if res['resource'].get('provenance', False):
             package_dict['provenance'] = res['resource']['provenance']
