@@ -1,6 +1,6 @@
 # ckanext-socrata
 
-This extension provides a CKAN Harvest plugin that consumes metadata from other Socrata data catalogs, using the [Socrata Discovery API](https://socratadiscovery.docs.apiary.io).
+This extension provides a CKAN Harvest plugin that consumes metadata from Socrata data catalogs, using the [Socrata Discovery API](https://socratadiscovery.docs.apiary.io).
 
 ## Installation
 
