@@ -150,7 +150,7 @@ class SocrataHarvester(HarvesterBase):
             'extras': [],
             'identifier': res['resource']['id'],
             'owner_org': local_org,
-            'resources': []
+            'resources': [],
         }
 
         # Add tags
@@ -163,10 +163,22 @@ class SocrataHarvester(HarvesterBase):
         package_dict['extras'].extend(res['classification']
                                       .get('domain_metadata', []))
 
+        # Add source createdAt to extras
+        package_dict['extras'].append({
+            'key': 'source_created_at',
+            'value': res['resource']['createdAt']
+        })
+
         # Add source updatedAt to extras
         package_dict['extras'].append({
             'key': 'source_updated_at',
             'value': res['resource']['updatedAt']
+        })
+
+        # Add owner_display_name to extras
+        package_dict['extras'].append({
+            'key': 'owner_display_name',
+            'value': res.get('owner', {}).get('display_name')
         })
 
         # Add Socrata metadata.license if available
