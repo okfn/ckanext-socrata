@@ -181,6 +181,14 @@ class SocrataHarvester(HarvesterBase):
             'value': res.get('owner', {}).get('display_name')
         })
 
+        # Add categories to extras
+        package_dict['extras'].append({
+            'key': 'categories',
+            'value': [t
+                      for t in res['classification'].get('categories', [])
+                      + res['classification'].get('domain_categories', [])],
+        })
+
         # Add Socrata metadata.license if available
         if res['metadata'].get('license', False):
             package_dict['extras'].append({
