@@ -142,7 +142,7 @@ class SocrataHarvester(HarvesterBase):
 
         package_dict = {
             'title': res['resource']['name'],
-            'name': munge_title_to_name(res['resource']['name']),
+            'name': self._gen_new_name(res['resource']['name']),
             'url': res.get('permalink', ''),
             'notes': res['resource'].get('description', ''),
             'author': res['resource']['attribution'],
