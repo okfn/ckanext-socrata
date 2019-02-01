@@ -23,6 +23,11 @@ BASE_API_ENDPOINT = "https://api.us.socrata.com/api/catalog/v1"
 DOWNLOAD_ENDPOINT_TEMPLATE = \
     "https://{domain}/api/views/{resource_id}/rows.csv?accessType=DOWNLOAD"
 
+# See https://socratadiscovery.docs.apiary.io/#reference/0/find-by-query-term
+# This default value is equivalent to do an OR search with all terms defined
+# in `q`
+DEFAULT_MIN_SHOULD_MATCH='1'
+
 
 class SocrataHarvester(HarvesterBase):
     '''
@@ -224,6 +229,28 @@ class SocrataHarvester(HarvesterBase):
             'description': 'Harvests from Socrata data catalogues'
         }
 
+    def validate_config(self, source_config):
+        if not source_config:
+            return source_config
+
+        try:
+            source_config_obj = json.loads(source_config)
+        except ValueError:
+            raise
+
+        if not isinstance(source_config_obj.get('q', ''), list):
+            raise ValueError(
+                '`q` should be a list of search terms')
+        return source_config
+
+    def _get_config(harvest_job):
+        if harvest_job.source.config:
+            try:
+                return json.loads(harvest_job.source.config)
+            except ValueError:
+                pass
+        return {}
+
     def gather_stage(self, harvest_job):
         '''
         Gather dataset content from Socrate and create HarvestObjects for each
@@ -233,11 +260,17 @@ class SocrataHarvester(HarvesterBase):
         :returns: A list of HarvestObject ids
         '''
 
-        def _request_datasets_from_socrata(domain, limit=100, offset=0):
+        def _request_datasets_from_socrata(domain, limit=100, offset=0, q=None,
+                min_should_match=DEFAULT_MIN_SHOULD_MATCH):
             api_request_url = \
                 '{0}?domains={1}&search_context={1}' \
                 '&only=datasets&limit={2}&offset={3}' \
                 .format(BASE_API_ENDPOINT, domain, limit, offset)
+
+            if q:
+                api_request_url += '&q={}&min_should_match={}'.format(
+                    ' '.join(q), min_should_match)
+
             log.debug('Requesting {}'.format(api_request_url))
             api_response = requests.get(api_request_url)
 
@@ -258,13 +291,15 @@ class SocrataHarvester(HarvesterBase):
 
             return api_json['results']
 
-        def _page_datasets(domain, batch_number):
+        def _page_datasets(domain, batch_number, q=None,
+                min_should_match=DEFAULT_MIN_SHOULD_MATCH):
             '''Request datasets by page until an empty array is returned'''
             current_offset = 0
             while True:
                 datasets = \
                     _request_datasets_from_socrata(domain, batch_number,
-                                                   current_offset)
+                                                   current_offset, q,
+                                                   min_should_match)
                 if datasets is None or len(datasets) == 0:
                     raise StopIteration
                 current_offset = current_offset + batch_number
@@ -293,9 +328,15 @@ class SocrataHarvester(HarvesterBase):
         log.debug('In SocrataHarvester gather_stage (%s)',
                   harvest_job.source.url)
 
+        config = self._get_config(harvest_job)
+
         domain = urlparse(harvest_job.source.url).hostname
 
-        object_ids, guids = _make_harvest_objs(_page_datasets(domain, 100))
+        q = config.get('q')
+        min_should_match = config.get('min_should_match')
+
+        object_ids, guids = _make_harvest_objs(
+            _page_datasets(domain, 100, q, min_should_match))
 
         # Check if some datasets need to be deleted
         object_ids_to_delete = \
