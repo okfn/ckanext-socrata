@@ -238,12 +238,16 @@ class SocrataHarvester(HarvesterBase):
         except ValueError:
             raise
 
+        if not isinstance(source_config_obj.get('domains', []), list):
+            raise ValueError(
+                '`domains` should be a list of domain names to search')
+
         if not isinstance(source_config_obj.get('q', ''), list):
             raise ValueError(
                 '`q` should be a list of search terms')
         return source_config
 
-    def _get_config(harvest_job):
+    def _get_config(self, harvest_job):
         if harvest_job.source.config:
             try:
                 return json.loads(harvest_job.source.config)
@@ -329,8 +333,10 @@ class SocrataHarvester(HarvesterBase):
                   harvest_job.source.url)
 
         config = self._get_config(harvest_job)
-
-        domain = urlparse(harvest_job.source.url).hostname
+        if config.get('domains'):
+            domain = ','.join(config['domains'])
+        else:
+            domain = urlparse(harvest_job.source.url).hostname
 
         q = config.get('q')
         min_should_match = config.get('min_should_match')
