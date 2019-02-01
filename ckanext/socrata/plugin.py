@@ -264,12 +264,12 @@ class SocrataHarvester(HarvesterBase):
         :returns: A list of HarvestObject ids
         '''
 
-        def _request_datasets_from_socrata(domain, limit=100, offset=0, q=None,
-                min_should_match=DEFAULT_MIN_SHOULD_MATCH):
+        def _request_datasets_from_socrata(domain, search_context,
+                limit=100, offset=0, q=None, min_should_match=None):
             api_request_url = \
-                '{0}?domains={1}&search_context={1}' \
-                '&only=datasets&limit={2}&offset={3}' \
-                .format(BASE_API_ENDPOINT, domain, limit, offset)
+                '{}?domains={}&search_context={}' \
+                '&only=datasets&limit={}&offset={}' \
+                .format(BASE_API_ENDPOINT, domain, search_context, limit, offset)
 
             if q:
                 api_request_url += '&q={}&min_should_match={}'.format(
@@ -295,15 +295,15 @@ class SocrataHarvester(HarvesterBase):
 
             return api_json['results']
 
-        def _page_datasets(domain, batch_number, q=None,
-                min_should_match=DEFAULT_MIN_SHOULD_MATCH):
+        def _page_datasets(domain, search_context, batch_number, q=None,
+                min_should_match=None):
             '''Request datasets by page until an empty array is returned'''
             current_offset = 0
             while True:
                 datasets = \
-                    _request_datasets_from_socrata(domain, batch_number,
-                                                   current_offset, q,
-                                                   min_should_match)
+                    _request_datasets_from_socrata(
+                        domain, search_context, batch_number, current_offset,
+                        q, min_should_match)
                 if datasets is None or len(datasets) == 0:
                     raise StopIteration
                 current_offset = current_offset + batch_number
@@ -333,16 +333,18 @@ class SocrataHarvester(HarvesterBase):
                   harvest_job.source.url)
 
         config = self._get_config(harvest_job)
+        search_context = urlparse(harvest_job.source.url).hostname
         if config.get('domains'):
             domain = ','.join(config['domains'])
         else:
-            domain = urlparse(harvest_job.source.url).hostname
+            domain = search_context
 
         q = config.get('q')
-        min_should_match = config.get('min_should_match')
+        min_should_match = config.get(
+            'min_should_match', DEFAULT_MIN_SHOULD_MATCH)
 
         object_ids, guids = _make_harvest_objs(
-            _page_datasets(domain, 100, q, min_should_match))
+            _page_datasets(domain, search_context, 100, q, min_should_match))
 
         # Check if some datasets need to be deleted
         object_ids_to_delete = \
