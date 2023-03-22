@@ -161,7 +161,8 @@ class SocrataHarvester(HarvesterBase):
             'owner_org': local_org,
             'resources': [],
         }
-
+        log.info(package_dict)
+        log.info(res)
         # Add tags
         package_dict['tags'] = \
             [{'name': munge_tag(t)}
@@ -214,20 +215,20 @@ class SocrataHarvester(HarvesterBase):
             'url': DOWNLOAD_ENDPOINT_TEMPLATE.format(
                 domain=urlparse(harvest_object.source.url).hostname,
                 resource_id=res['resource']['id']),
-            'format': 'CSV'
+            'format': 'CSV',
+            'name': res['resource']['name']
         }]
 
         return package_dict
     
     def _set_config(self, config_str):
+        self.config = {'base_api_endpoint':BASE_API_ENDPOINT}
         if config_str:
-            self.config = self.validate_config(config_str)
+            self.config = json.loads(config_str)
             if 'base_api_endpoint' in self.config:
                 self.base_api_endpoint = self.config['base_api_endpoint']
 
             log.debug('Using config: %r', self.config)
-        else:
-            self.config = {'base_api_endpoint':BASE_API_ENDPOINT}
 
     def validate_config(self, config):
         if not config:
@@ -241,7 +242,7 @@ class SocrataHarvester(HarvesterBase):
                 raise ValueError('base_api_endpoint must be a valid URL')
             if not parsed.scheme or not parsed.netloc:
                 raise ValueError('base_api_endpoint must be a valid URL')
-        return config_obj
+        return config
     
     def process_package(self, package, harvest_object):
         '''
@@ -319,6 +320,7 @@ class SocrataHarvester(HarvesterBase):
                                     extras=[HarvestObjectExtra(
                                                         key='status',
                                                         value='hi!')])
+                log.debug('Content is {}'.format(json.dumps(d)))
                 obj.save()
                 obj_ids.append(obj.id)
                 guids.append(d['resource']['id'])
@@ -454,3 +456,5 @@ class SocrataHarvester(HarvesterBase):
                 return False
 
         return True
+
+
