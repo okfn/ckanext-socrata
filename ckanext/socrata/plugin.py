@@ -161,8 +161,6 @@ class SocrataHarvester(HarvesterBase):
             'owner_org': local_org,
             'resources': [],
         }
-        log.info(package_dict)
-        log.info(res)
         # Add tags
         package_dict['tags'] = \
             [{'name': munge_tag(t)}
@@ -320,7 +318,6 @@ class SocrataHarvester(HarvesterBase):
                                     extras=[HarvestObjectExtra(
                                                         key='status',
                                                         value='hi!')])
-                log.debug('Content is {}'.format(json.dumps(d)))
                 obj.save()
                 obj_ids.append(obj.id)
                 guids.append(d['resource']['id'])
