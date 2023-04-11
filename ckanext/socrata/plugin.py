@@ -2,14 +2,23 @@ from __future__ import unicode_literals
 
 import json
 import uuid
-from urlparse import urlparse
-
 import requests
 from dateutil.parser import parse
-from simplejson.scanner import JSONDecodeError
+
+try:
+    from urllib.parse import urlparse
+except ImportError:
+    from urlparse import urlparse
+
+try:
+    from json import JSONDecodeError
+except ImportError:
+    from simplejson.scanner import JSONDecodeError
+
+
 
 from ckan import model
-from ckan.lib.munge import munge_title_to_name, munge_tag
+from ckan.lib.munge import munge_tag
 from ckan.plugins.core import implements
 import ckan.plugins.toolkit as toolkit
 from ckanext.harvest.interfaces import IHarvester
@@ -152,7 +161,6 @@ class SocrataHarvester(HarvesterBase):
             'owner_org': local_org,
             'resources': [],
         }
-
         # Add tags
         package_dict['tags'] = \
             [{'name': munge_tag(t)}
@@ -205,11 +213,35 @@ class SocrataHarvester(HarvesterBase):
             'url': DOWNLOAD_ENDPOINT_TEMPLATE.format(
                 domain=urlparse(harvest_object.source.url).hostname,
                 resource_id=res['resource']['id']),
-            'format': 'CSV'
+            'format': 'CSV',
+            'name': res['resource']['name']
         }]
 
         return package_dict
+    
+    def _set_config(self, config_str):
+        self.config = {'base_api_endpoint':BASE_API_ENDPOINT}
+        if config_str:
+            self.config = json.loads(config_str)
+            if 'base_api_endpoint' in self.config:
+                self.base_api_endpoint = self.config['base_api_endpoint']
 
+            log.debug('Using config: %r', self.config)
+
+    def validate_config(self, config):
+        if not config:
+            return config
+
+        config_obj = json.loads(config)
+        if 'base_api_endpoint' in config_obj:
+            try:
+                parsed = urlparse(config_obj['base_api_endpoint'])
+            except AttributeError:
+                raise ValueError('base_api_endpoint must be a valid URL')
+            if not parsed.scheme or not parsed.netloc:
+                raise ValueError('base_api_endpoint must be a valid URL')
+        return config
+    
     def process_package(self, package, harvest_object):
         '''
         Subclasses can override this method to perform additional processing on
@@ -237,7 +269,7 @@ class SocrataHarvester(HarvesterBase):
             api_request_url = \
                 '{0}?domains={1}&search_context={1}' \
                 '&only=datasets&limit={2}&offset={3}' \
-                .format(BASE_API_ENDPOINT, domain, limit, offset)
+                .format(self.base_api_endpoint, domain, limit, offset)
             log.debug('Requesting {}'.format(api_request_url))
             api_response = requests.get(api_request_url)
 
@@ -266,8 +298,9 @@ class SocrataHarvester(HarvesterBase):
                     _request_datasets_from_socrata(domain, batch_number,
                                                    current_offset)
                 if datasets is None or len(datasets) == 0:
-                    raise StopIteration
+                    break
                 current_offset = current_offset + batch_number
+                log.debug(f'Continued with {current_offset}-{batch_number}')
                 for dataset in datasets:
                     yield dataset
 
@@ -292,7 +325,7 @@ class SocrataHarvester(HarvesterBase):
 
         log.debug('In SocrataHarvester gather_stage (%s)',
                   harvest_job.source.url)
-
+        self._set_config(harvest_job.source.config)
         domain = urlparse(harvest_job.source.url).hostname
 
         object_ids, guids = _make_harvest_objs(_page_datasets(domain, 100))
@@ -396,7 +429,7 @@ class SocrataHarvester(HarvesterBase):
 
         else:
             # We need to explicitly provide a package ID
-            package_dict['id'] = unicode(uuid.uuid4())
+            package_dict['id'] = str(uuid.uuid4())
 
             harvest_object.package_id = package_dict['id']
             harvest_object.add()
@@ -420,3 +453,5 @@ class SocrataHarvester(HarvesterBase):
                 return False
 
         return True
+
+

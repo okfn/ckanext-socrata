@@ -18,6 +18,25 @@ This extension provides a CKAN Harvest plugin that consumes metadata from Socrat
 
         ckan.plugins = harvest socrata_harvester
 
+## Usage
+
+Create a new harvest source of type "Socrata" and enter the URL of the Socrata catalog you want to harvest from. The default base url to retrieve catalogues is "https://api.us.socrata.com/api/catalog/v1". You can provide a config object to the harvester to change this base url. For example:
+
+```json
+{
+  "base_url": "https://api.eu.socrata.com/api/catalog/v1"
+}
+```
+
+For local development, run
+
+```bash
+ckan harvester gather-consumer
+ckan harvester fetch-consumer
+```
+
+to see the harvest jobs being processed.
+
 ## Copying and License
 
 This material is copyright (c) Open Knowledge International.
